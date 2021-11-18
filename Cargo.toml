@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 toml = "0.5"
 signal-hook = "0.3.10"
+regex = "1.5.4"

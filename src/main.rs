@@ -14,11 +14,37 @@ use std::convert::TryInto;
 use std::io::{Error, ErrorKind};
 
 use std::io::Read;
+use std::string::ToString;
+
+use regex::Regex;
 
 use std::thread;
 
+// TODO: cleanup project. multiple files/modules?
+// TODO: add message-length encoding in answer to client
+// TODO: write a client
+
 static MAX_CLIENT_THREADS: usize = 64;
 static CLIENT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug)]
+enum Message {
+    RegisterUsername(String),
+    Text(String),
+}
+
+impl ToString for Message {
+    fn to_string(&self) -> String {
+        match self {
+            Message::RegisterUsername(v) => {
+                return v.to_string();
+            }
+            Message::Text(v) => {
+                return v.to_string();
+            }
+        }
+    }
+}
 
 struct Client {
     stream: net::TcpStream,
@@ -49,7 +75,23 @@ fn convert_be_u8_to_usize(buffer: &[u8; 4]) -> usize {
     result
 }
 
-fn get_message(stream: &mut net::TcpStream) -> Result<String, Error> {
+fn parse_message(message: String) -> Result<Message, Error> {
+    let text_re = Regex::new(r"^Text\|(.)*$").unwrap();
+    let username_re = Regex::new(r"^RegisterUsername\|(.)*$").unwrap();
+
+    if text_re.is_match(&message) {
+        return Ok(Message::Text(String::from(&message[5..])));
+    } else if username_re.is_match(&message) {
+        return Ok(Message::RegisterUsername(String::from(&message[17..])));
+    }
+
+    return Err(Error::new(
+        ErrorKind::InvalidData,
+        "Message not of type Text or RegisterUsername",
+    ));
+}
+
+fn get_message(stream: &mut net::TcpStream) -> Result<Message, Error> {
     let mut tmp_buffer = [0; 512];
 
     let mut raw_message: Vec<u8> = Vec::new();
@@ -99,7 +141,7 @@ fn get_message(stream: &mut net::TcpStream) -> Result<String, Error> {
         }
     };
 
-    return Ok(message);
+    parse_message(message)
 }
 
 fn handle_client(
@@ -122,6 +164,11 @@ fn handle_client(
         }
     };
 
+    let mut username = match stream.peer_addr() {
+        Ok(v) => v.to_string(),
+        Err(_) => String::from("UNKNOWN-IP"),
+    };
+
     let own_client = Client::new(cloned_stream);
     let own_id = own_client.id;
 
@@ -142,15 +189,10 @@ fn handle_client(
     // "unlock" clients again
     drop(clients_unlocked);
 
-    let name = match stream.peer_addr() {
-        Ok(v) => v.to_string(),
-        Err(_) => String::from("UNKOWN-IP"),
-    };
-
     // in loop:
     while active_bool.load(Ordering::Relaxed) {
         // 1. get message
-        let mut message = match get_message(&mut stream) {
+        let message = match get_message(&mut stream) {
             Ok(v) => v,
             Err(e) => match e.kind() {
                 ErrorKind::WouldBlock => {
@@ -172,7 +214,15 @@ fn handle_client(
             },
         };
 
-        message = format!("{}: {}", name, message);
+        let message = match message {
+            Message::Text(v) => format!("{}: {}", username, v),
+
+            Message::RegisterUsername(v) => {
+                let old_username = username;
+                username = v.to_string();
+                format!("\"{}\" changed username to \"{}\"", old_username, username)
+            }
+        };
 
         // 2. get access to client-vector
         let mut clients_unlocked = match clients.lock() {
