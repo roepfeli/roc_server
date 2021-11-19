@@ -21,7 +21,6 @@ use regex::Regex;
 use std::thread;
 
 // TODO: cleanup project. multiple files/modules?
-// TODO: add message-length encoding in answer to client
 // TODO: write a client
 
 static MAX_CLIENT_THREADS: usize = 64;
@@ -75,6 +74,17 @@ fn convert_be_u8_to_usize(buffer: &[u8; 4]) -> usize {
     result
 }
 
+fn convert_usize_to_be_u8(a: usize) -> [u8; 4] {
+    let mut result = [0; 4];
+
+    result[0] = (a & 0x000000ff) as u8;
+    result[1] = (a & 0x0000ff00 >> 8) as u8;
+    result[2] = (a & 0x00ff0000 >> 16) as u8;
+    result[3] = (a & 0xff000000 >> 24) as u8;
+
+    result
+}
+
 fn parse_message(message: String) -> Result<Message, Error> {
     let text_re = Regex::new(r"^Text\|(.)*$").unwrap();
     let username_re = Regex::new(r"^RegisterUsername\|(.)*$").unwrap();
@@ -89,6 +99,33 @@ fn parse_message(message: String) -> Result<Message, Error> {
         ErrorKind::InvalidData,
         "Message not of type Text or RegisterUsername",
     ));
+}
+
+fn send_message(
+    stream: &mut net::TcpStream,
+    message: &Message,
+    username: &String,
+) -> Result<(), Error> {
+    // 1. get length of message
+    let message = match message {
+        Message::Text(v) => format!("{}: {}", username, v),
+
+        Message::RegisterUsername(v) => {
+            format!("\"{}\" changed username to \"{}\"", username, v)
+        }
+    };
+
+    let message = message.as_bytes();
+
+    let message_length = convert_usize_to_be_u8(message.len());
+
+    // 2. send length of message
+    stream.write(&message_length)?;
+
+    // 3. send utf8-encoded bytes of message
+    stream.write(&message)?;
+
+    Ok(())
 }
 
 fn get_message(stream: &mut net::TcpStream) -> Result<Message, Error> {
@@ -214,16 +251,6 @@ fn handle_client(
             },
         };
 
-        let message = match message {
-            Message::Text(v) => format!("{}: {}", username, v),
-
-            Message::RegisterUsername(v) => {
-                let old_username = username;
-                username = v.to_string();
-                format!("\"{}\" changed username to \"{}\"", old_username, username)
-            }
-        };
-
         // 2. get access to client-vector
         let mut clients_unlocked = match clients.lock() {
             Ok(v) => v,
@@ -240,13 +267,15 @@ fn handle_client(
         // 3. send message to all clients but own client
         for client in &mut (*clients_unlocked) {
             if (*client).id != own_id {
-                match (*client).stream.write(message.as_bytes()) {
-                    Ok(_) => (),
-                    Err(e) => {
-                        println!("Error writing message to clients tcp-stream: {}", e);
-                    }
+                if let Err(e) = send_message(&mut (*client).stream, &message, &username) {
+                    println!("WARNING: Error when sending message to client: {}", e);
                 }
             }
+        }
+
+        // change username if message was RegisterUsername
+        if let Message::RegisterUsername(v) = message {
+            username = v.to_string();
         }
     }
 
@@ -315,8 +344,6 @@ fn main() {
                     .into_iter()
                     .filter(|client_thread| client_thread.is_active.load(Ordering::Relaxed))
                     .collect();
-
-                dbg!(client_threads.len());
 
                 if client_threads.len() >= MAX_CLIENT_THREADS {
                     println!("WARNING: Maximum client threads already created. Waiting for threads to close, ignoring incoming connection...");
