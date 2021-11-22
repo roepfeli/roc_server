@@ -15,6 +15,8 @@ mod client;
 mod message;
 
 // TODO: write a client
+// TODO: send serverinfo if to clients if a client connected
+// TODO: send time with all messages
 
 static MAX_CLIENT_THREADS: usize = 64;
 

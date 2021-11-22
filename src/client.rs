@@ -42,10 +42,14 @@ pub fn handle_client(
         }
     };
 
-    let mut username = match stream.peer_addr() {
+    let adress = match stream.peer_addr() {
         Ok(v) => v.to_string(),
         Err(_) => String::from("UNKNOWN-IP"),
     };
+
+    println!("Client sucessfully connected from: {}", adress);
+
+    let mut username = adress.clone();
 
     let own_client = Client::new(cloned_stream);
     let own_id = own_client.id;
@@ -148,4 +152,6 @@ pub fn handle_client(
 
     // tell the main-thread that this thread has exited...
     active_bool.store(false, Ordering::Relaxed);
+
+    println!("Client has sucessfully disconnected: {}", adress);
 }

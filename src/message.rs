@@ -5,12 +5,14 @@ use std::io::{Error, ErrorKind, Read, Write};
 
 use regex::Regex;
 
+#[derive(Debug)]
 pub enum Message {
     RegisterUsername(String),
     UserText(String),
     ServerInfo(ServerInfoType, String),
 }
 
+#[derive(Debug)]
 pub enum ServerInfoType {
     Disconnected,
 }
@@ -18,48 +20,48 @@ pub enum ServerInfoType {
 impl Message {
     fn to_string(&self, username: &String) -> String {
         match self {
-            Message::UserText(v) => format!("{}: {}", username, v),
+            Message::UserText(v) => format!("UserText|{}: {}", username, v),
 
             Message::RegisterUsername(v) => {
-                format!("\"{}\" changed username to \"{}\"", username, v)
+                format!("ServerInfo|\"{}\" changed username to \"{}\"", username, v)
             }
 
             Message::ServerInfo(t, v) => match t {
-                ServerInfoType::Disconnected => format!("\"{}\" {}", username, v),
+                ServerInfoType::Disconnected => format!("ServerInfo|\"{}\" {}", username, v),
             },
         }
     }
 }
 
-fn convert_be_u8_to_usize(buffer: &[u8; 4]) -> usize {
-    let mut result: usize = buffer[3] as usize;
+fn convert_be_u8_array_to_u32(buffer: &[u8; 4]) -> u32 {
+    let mut result = buffer[3] as u32;
 
-    result += (buffer[2] as usize) << 8;
-    result += (buffer[1] as usize) << 16;
-    result += (buffer[0] as usize) << 24;
+    result += (buffer[2] as u32) << 8;
+    result += (buffer[1] as u32) << 16;
+    result += (buffer[0] as u32) << 24;
 
     result
 }
 
-fn convert_usize_to_be_u8(a: usize) -> [u8; 4] {
+fn convert_u32_to_be_u8_array(a: u32) -> [u8; 4] {
     let mut result = [0; 4];
 
-    result[0] = (a & 0x000000ff) as u8;
-    result[1] = (a & 0x0000ff00 >> 8) as u8;
-    result[2] = (a & 0x00ff0000 >> 16) as u8;
-    result[3] = (a & 0xff000000 >> 24) as u8;
+    result[3] = (a & 0x000000ff) as u8;
+    result[2] = ((a & 0x0000ff00) >> 8) as u8;
+    result[1] = ((a & 0x00ff0000) >> 16) as u8;
+    result[0] = ((a & 0xff000000) >> 24) as u8;
 
     result
 }
 
 pub fn parse_message(message: String) -> Result<Message, Error> {
-    let text_re = Regex::new(r"^Text\|(.)*$").unwrap();
+    let text_re = Regex::new(r"^UserText\|(.)*$").unwrap();
     let username_re = Regex::new(r"^RegisterUsername\|(.)*$").unwrap();
 
     // TODO: hardcoded slices suck.. try using captures()!
 
     if text_re.is_match(&message) {
-        return Ok(Message::UserText(String::from(&message[5..])));
+        return Ok(Message::UserText(String::from(&message[9..])));
     } else if username_re.is_match(&message) {
         return Ok(Message::RegisterUsername(String::from(&message[17..])));
     }
@@ -85,7 +87,7 @@ pub fn send_message(
     let message_string = message.to_string(&username);
     let message_bytes = message_string.as_bytes();
 
-    let message_length = convert_usize_to_be_u8(message_bytes.len());
+    let message_length = convert_u32_to_be_u8_array(message_bytes.len() as u32);
 
     // 2. send length of message
     stream.write(&message_length)?;
@@ -119,7 +121,7 @@ pub fn get_message(stream: &mut net::TcpStream) -> Result<Message, Error> {
     }
 
     let mut message_size = match &tmp_buffer[..4].try_into() {
-        Ok(v) => convert_be_u8_to_usize(&v),
+        Ok(v) => convert_be_u8_array_to_u32(&v),
         Err(_) => {
             return Err(Error::new(
                 ErrorKind::InvalidData,
@@ -131,9 +133,13 @@ pub fn get_message(stream: &mut net::TcpStream) -> Result<Message, Error> {
     while message_size > 0 {
         let read_in = stream.read(&mut tmp_buffer)?;
 
+        if read_in == 0 {
+            break;
+        }
+
         raw_message.extend_from_slice(&tmp_buffer[..read_in]);
 
-        message_size -= read_in;
+        message_size -= read_in as u32;
     }
 
     let message = match String::from_utf8(raw_message) {
